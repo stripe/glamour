@@ -12,6 +12,9 @@ import (
 
 	"charm.land/glamour/v2/styles"
 	"github.com/charmbracelet/x/exp/golden"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/renderer"
+	"github.com/yuin/goldmark/util"
 )
 
 const markdown = "testdata/readme.markdown.in"
@@ -322,4 +325,95 @@ func TestWithChromaFormatterCustom(t *testing.T) {
 	}
 
 	golden.RequireEqual(t, []byte(b))
+}
+
+type testLinkRenderer struct {
+	called bool
+}
+
+func (r *testLinkRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
+	reg.Register(ast.KindLink, r.renderLink)
+}
+
+func (r *testLinkRenderer) renderLink(
+	w util.BufWriter, _ []byte, node ast.Node, entering bool,
+) (ast.WalkStatus, error) {
+	r.called = true
+	if entering {
+		n := node.(*ast.Link)
+		_, _ = w.WriteString("[CUSTOM:" + string(n.Destination) + "]")
+	} else {
+		_, _ = w.WriteString("[/CUSTOM]")
+	}
+	return ast.WalkContinue, nil
+}
+
+func TestWithNodeRenderers(t *testing.T) {
+	lr := &testLinkRenderer{}
+	r, err := NewTermRenderer(
+		WithStandardStyle(styles.DarkStyle),
+		WithNodeRenderers(util.Prioritized(lr, 500)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := r.Render("[click here](https://example.com)")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !lr.called {
+		t.Fatal("custom node renderer was not called")
+	}
+	if !strings.Contains(out, "[CUSTOM:https://example.com]") {
+		t.Errorf("expected custom link output, got: %s", out)
+	}
+}
+
+func TestWithNodeRenderers_LowerPriorityWins(t *testing.T) {
+	first := &testLinkRenderer{}
+	second := &testLinkRenderer{}
+	r, err := NewTermRenderer(
+		WithStandardStyle(styles.DarkStyle),
+		WithNodeRenderers(
+			util.Prioritized(first, 100),
+			util.Prioritized(second, 200),
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = r.Render("[link](https://example.com)")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !first.called {
+		t.Fatal("higher-priority (lower value) renderer was not called")
+	}
+	if second.called {
+		t.Fatal("lower-priority renderer should not have been called")
+	}
+}
+
+func TestWithNodeRenderers_Empty(t *testing.T) {
+	r, err := NewTermRenderer(
+		WithStandardStyle(styles.DarkStyle),
+		WithNodeRenderers(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := r.Render("hello world")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stripped := regexp.MustCompile(`\x1b\[[^m]*m`).ReplaceAllString(out, "")
+	if !strings.Contains(stripped, "hello world") {
+		t.Errorf("expected default rendering, got: %s", out)
+	}
 }

@@ -32,10 +32,11 @@ type TermRendererOption func(*TermRenderer) error
 // TermRenderer can be used to render markdown content, posing a depth of
 // customization and styles to fit your needs.
 type TermRenderer struct {
-	md          goldmark.Markdown
-	ansiOptions ansi.Options
-	buf         bytes.Buffer
-	renderBuf   bytes.Buffer
+	md            goldmark.Markdown
+	ansiOptions   ansi.Options
+	buf           bytes.Buffer
+	renderBuf     bytes.Buffer
+	nodeRenderers []util.PrioritizedValue
 }
 
 // Render initializes a new TermRenderer and renders a markdown with a specific
@@ -86,11 +87,13 @@ func NewTermRenderer(options ...TermRendererOption) (*TermRenderer, error) {
 		}
 	}
 	ar := ansi.NewRenderer(tr.ansiOptions)
+	nodeRenderers := append(
+		[]util.PrioritizedValue{util.Prioritized(ar, highPriority)},
+		tr.nodeRenderers...,
+	)
 	tr.md.SetRenderer(
 		renderer.NewRenderer(
-			renderer.WithNodeRenderers(
-				util.Prioritized(ar, highPriority),
-			),
+			renderer.WithNodeRenderers(nodeRenderers...),
 		),
 	)
 	return tr, nil
@@ -216,6 +219,16 @@ func WithEmoji() TermRendererOption {
 func WithChromaFormatter(formatter string) TermRendererOption {
 	return func(tr *TermRenderer) error {
 		tr.ansiOptions.ChromaFormatter = formatter
+		return nil
+	}
+}
+
+// WithNodeRenderers adds custom goldmark NodeRenderers to the rendering
+// pipeline. Each entry should be created with util.Prioritized. Renderers with
+// lower priority values take precedence over those with higher values.
+func WithNodeRenderers(renderers ...util.PrioritizedValue) TermRendererOption {
+	return func(tr *TermRenderer) error {
+		tr.nodeRenderers = append(tr.nodeRenderers, renderers...)
 		return nil
 	}
 }
