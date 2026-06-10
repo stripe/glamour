@@ -398,6 +398,58 @@ func TestWithNodeRenderers_LowerPriorityWins(t *testing.T) {
 	}
 }
 
+type testCodeBlockRenderer struct {
+	called bool
+}
+
+func (r *testCodeBlockRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
+	reg.Register(ast.KindFencedCodeBlock, r.renderCodeBlock)
+}
+
+func (r *testCodeBlockRenderer) renderCodeBlock(
+	w util.BufWriter, _ []byte, _ ast.Node, entering bool,
+) (ast.WalkStatus, error) {
+	r.called = true
+	if entering {
+		_, _ = w.WriteString("[CUSTOM_CODE]")
+		return ast.WalkSkipChildren, nil
+	}
+	return ast.WalkContinue, nil
+}
+
+func TestWithNodeRenderers_BlockElement(t *testing.T) {
+	cr := &testCodeBlockRenderer{}
+	r, err := NewTermRenderer(
+		WithStandardStyle(styles.DarkStyle),
+		WithNodeRenderers(util.Prioritized(cr, 500)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := r.Render("before\n\n```\ncode\n```\n\nafter")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !cr.called {
+		t.Fatal("custom code block renderer was not called")
+	}
+
+	stripped := regexp.MustCompile(`\x1b\[[^m]*m`).ReplaceAllString(out, "")
+	beforeIdx := strings.Index(stripped, "before")
+	customIdx := strings.Index(stripped, "[CUSTOM_CODE]")
+	afterIdx := strings.Index(stripped, "after")
+
+	if beforeIdx == -1 || customIdx == -1 || afterIdx == -1 {
+		t.Fatalf("expected all content in output, got: %q", stripped)
+	}
+	if beforeIdx > customIdx || customIdx > afterIdx {
+		t.Errorf("content out of order: before=%d [CUSTOM_CODE]=%d after=%d in: %q",
+			beforeIdx, customIdx, afterIdx, stripped)
+	}
+}
+
 func TestWithNodeRenderers_Empty(t *testing.T) {
 	r, err := NewTermRenderer(
 		WithStandardStyle(styles.DarkStyle),
