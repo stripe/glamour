@@ -1,9 +1,11 @@
 package ansi
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/url"
+	"sort"
 	"strings"
 
 	east "github.com/yuin/goldmark-emoji/ast"
@@ -26,7 +28,8 @@ type Options struct {
 
 // ANSIRenderer renders markdown content as ANSI escaped sequences.
 type ANSIRenderer struct { //nolint: revive
-	context RenderContext
+	context         RenderContext
+	customRenderers []util.PrioritizedValue
 }
 
 // NewRenderer returns a new ANSIRenderer with style and options set.
@@ -35,6 +38,42 @@ func NewRenderer(options Options) *ANSIRenderer {
 		context: NewRenderContext(options),
 	}
 }
+
+// NewRendererWithCustom returns a new ANSIRenderer with custom node renderers
+// that write to glamour's block stack buffer instead of the final output.
+func NewRendererWithCustom(options Options, customRenderers []util.PrioritizedValue) *ANSIRenderer {
+	return &ANSIRenderer{
+		context:         NewRenderContext(options),
+		customRenderers: customRenderers,
+	}
+}
+
+// wrappingRegisterer wraps a NodeRendererFuncRegisterer and redirects the
+// writer passed to registered functions to glamour's current block stack
+// buffer, so custom renderer output lands in the correct position.
+type wrappingRegisterer struct {
+	inner   renderer.NodeRendererFuncRegisterer
+	context *RenderContext
+}
+
+func (r *wrappingRegisterer) Register(kind ast.NodeKind, fn renderer.NodeRendererFunc) {
+	r.inner.Register(kind, func(w util.BufWriter, src []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {
+		bs := r.context.blockStack
+		if bs.Len() > 0 {
+			return fn(&blockBufWriter{bs.Current().Block}, src, node, entering)
+		}
+		return fn(w, src, node, entering)
+	})
+}
+
+// blockBufWriter adapts *bytes.Buffer to util.BufWriter. bytes.Buffer writes
+// are unbuffered so Buffered always returns 0.
+type blockBufWriter struct {
+	*bytes.Buffer
+}
+
+func (b *blockBufWriter) Buffered() int { return 0 }
+func (b *blockBufWriter) Flush() error  { return nil }
 
 // RegisterFuncs implements NodeRenderer.RegisterFuncs.
 func (r *ANSIRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
@@ -86,6 +125,23 @@ func (r *ANSIRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
 
 	// emoji
 	reg.Register(east.KindEmoji, r.renderNode)
+
+	// Custom renderers are registered after glamour's defaults so they override
+	// them for the same node kinds. Sort descending by priority value so that
+	// lower-value (higher-precedence) renderers are registered last and win.
+	if len(r.customRenderers) > 0 {
+		wr := &wrappingRegisterer{inner: reg, context: &r.context}
+		sorted := make([]util.PrioritizedValue, len(r.customRenderers))
+		copy(sorted, r.customRenderers)
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].Priority > sorted[j].Priority
+		})
+		for _, pv := range sorted {
+			if cr, ok := pv.Value.(renderer.NodeRenderer); ok {
+				cr.RegisterFuncs(wr)
+			}
+		}
+	}
 }
 
 func (r *ANSIRenderer) renderNode(w util.BufWriter, source []byte, node ast.Node, entering bool) (ast.WalkStatus, error) {

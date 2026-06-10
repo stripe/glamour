@@ -86,14 +86,10 @@ func NewTermRenderer(options ...TermRendererOption) (*TermRenderer, error) {
 			return nil, err
 		}
 	}
-	ar := ansi.NewRenderer(tr.ansiOptions)
-	nodeRenderers := append(
-		[]util.PrioritizedValue{util.Prioritized(ar, highPriority)},
-		tr.nodeRenderers...,
-	)
+	ar := ansi.NewRendererWithCustom(tr.ansiOptions, tr.nodeRenderers)
 	tr.md.SetRenderer(
 		renderer.NewRenderer(
-			renderer.WithNodeRenderers(nodeRenderers...),
+			renderer.WithNodeRenderers(util.Prioritized(ar, highPriority)),
 		),
 	)
 	return tr, nil
